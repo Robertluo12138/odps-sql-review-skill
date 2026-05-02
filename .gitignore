@@ -1,0 +1,54 @@
+# --------------------------------------------------------------------- #
+# Build / packaging artefacts                                           #
+# --------------------------------------------------------------------- #
+dist/
+build/
+*.egg-info/
+*.egg
+
+# --------------------------------------------------------------------- #
+# Python caches                                                         #
+# --------------------------------------------------------------------- #
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+
+# --------------------------------------------------------------------- #
+# Virtual environments                                                  #
+# --------------------------------------------------------------------- #
+.venv/
+venv/
+env/
+ENV/
+
+# --------------------------------------------------------------------- #
+# Editor / OS                                                           #
+# --------------------------------------------------------------------- #
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# --------------------------------------------------------------------- #
+# Private business context (NEVER commit)                               #
+# --------------------------------------------------------------------- #
+# Local-only company SQL / table profiles / acceptance reports go in    #
+# these folders so they never accidentally end up in git or in the     #
+# QoderWork zip.                                                        #
+company_context/*.local.yml
+company_context/*.local.md
+company_context/private_*.sql
+private_cases/
+private_profiles/
+acceptance_reports/
+
+# --------------------------------------------------------------------- #
+# Misc                                                                  #
+# --------------------------------------------------------------------- #
+*.log
+.coverage
+htmlcov/

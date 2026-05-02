@@ -11,7 +11,7 @@ help:
 	@echo "  install      - pip install -e . (editable install)"
 	@echo "  dev          - install with dev extras (pytest, pyyaml, sqlglot)"
 	@echo "  test         - run pytest"
-	@echo "  review       - review examples/bad_left_join.sql in markdown"
+	@echo "  review       - review skill_package/odps-sql-review/examples/bad_left_join.sql in markdown"
 	@echo "  review-all   - review every example file in markdown"
 	@echo "  package      - build dist/odps-sql-review-skill.zip"
 	@echo "  clean        - remove caches and build artefacts"
@@ -26,10 +26,10 @@ test:
 	$(PYTHON) -m pytest -q
 
 review:
-	$(PYTHON) -m odps_sql_review examples/bad_left_join.sql --format markdown
+	$(PYTHON) -m odps_sql_review skill_package/odps-sql-review/examples/bad_left_join.sql --format markdown
 
 review-all:
-	@for f in examples/bad_*.sql; do \
+	@for f in skill_package/odps-sql-review/examples/bad_*.sql; do \
 		echo "===== $$f ====="; \
 		$(PYTHON) -m odps_sql_review $$f --format markdown; \
 		echo; \

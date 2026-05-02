@@ -10,7 +10,9 @@ from odps_sql_review.static_check import run_static_check
 
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_EXAMPLES = os.path.join(_REPO_ROOT, "examples")
+# The pure skill package lives under ``skill_package/odps-sql-review`` and
+# is the single source of truth for example SQL files.
+_EXAMPLES = os.path.join(_REPO_ROOT, "skill_package", "odps-sql-review", "examples")
 
 
 def _read(path: str) -> str:

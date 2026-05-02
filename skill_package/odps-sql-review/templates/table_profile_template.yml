@@ -1,0 +1,71 @@
+# Table profile 模板（safe fake examples only）
+# ---------------------------------------------------------------------
+# 这是供用户填写表元信息的模板。AI Agent 在评审 SQL 时如果发现
+# 缺少表粒度 / 唯一键 / 表大小信息，应该把这个模板贴给用户，让他
+# 按业务实际情况填写后再粘回来。
+#
+# 强烈不要：
+#   - 直接写公司真实表名（避免无意泄露）；
+#   - 写真实分区值；
+#   - 写凭证 / endpoint / token / 内部链接。
+#
+# 字段说明：
+#   partition_cols : 分区列，用于检测是否缺少分区过滤
+#   grain          : 表粒度（决定行的唯一含义）
+#   unique_keys    : 唯一键集合，每个元素是字段列表
+#   size_level     : "small" / "medium" / "large" —— 影响是否建议 MAPJOIN
+#   table_type     : "fact" / "dimension" / "dws" / "ads"
+#   description    : 业务描述（一两句话）
+#
+# 不确定时：留空 / 写 "需要确认"，不要猜测。
+
+tables:
+
+  # ===== 示例 1：事实大表（带 dt 分区） =====
+  fake_dwd_user_action_di:
+    partition_cols: ["dt"]
+    grain:          ["dt", "user_id", "action_id"]
+    unique_keys:
+      - ["dt", "user_id", "action_id"]
+    size_level:    "large"
+    table_type:    "fact"
+    description:   "用户行为明细，按天分区，单条记录代表一次行为"
+
+  # ===== 示例 2：日活中间表（按 dt + user_id） =====
+  fake_dws_user_active_di:
+    partition_cols: ["dt"]
+    grain:          ["dt", "user_id"]
+    unique_keys:
+      - ["dt", "user_id"]
+    size_level:    "large"
+    table_type:    "dws"
+    description:   "用户日活中间表，用于 MAU / YAU 计算"
+
+  # ===== 示例 3：维度表（小表，候选 MAPJOIN） =====
+  fake_dim_shop_df:
+    partition_cols: ["dt"]
+    grain:          ["shop_id"]
+    unique_keys:
+      - ["dt", "shop_id"]
+    size_level:    "small"
+    table_type:    "dimension"
+    description:   "店铺维度，按天全量，建议 MAPJOIN（< 几十万行）"
+
+  # ===== 示例 4：ADS 输出表 =====
+  fake_ads_user_order_di:
+    partition_cols: ["dt"]
+    grain:          ["dt", "user_id", "order_id"]
+    unique_keys:
+      - ["dt", "order_id"]
+    size_level:    "medium"
+    table_type:    "ads"
+    description:   "用户订单 ADS，下游 BI 报表使用"
+
+  # ===== 示例 5：缺信息时怎么写 =====
+  fake_unknown_table:
+    partition_cols: []          # 不确定
+    grain:          []          # 需要业务确认
+    unique_keys:    []          # 需要业务确认
+    size_level:    "需要确认"
+    table_type:    "需要确认"
+    description:   "暂时不清楚，请补充信息"
