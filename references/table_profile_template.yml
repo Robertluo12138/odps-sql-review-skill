@@ -1,0 +1,39 @@
+# Table profile 模板
+# ------------------------------------------------------------------
+# 用法：
+#   1. 复制本文件并重命名为 table_profile.yml；
+#   2. 将本次评审的所有源表 / 目标表都填进 tables 下；
+#   3. 把 yml 路径传给 CLI：
+#         odps-sql-review query.sql --table-profile path/to/table_profile.yml
+#
+# 字段说明：
+#   partition_cols  : 分区列，用于检测是否缺少分区过滤；
+#   grain           : 表粒度（决定行的唯一含义），用于判断口径；
+#   unique_keys     : 唯一键集合，每个元素是字段列表，用于 JOIN 唯一性判断；
+#   size_level      : "small" / "medium" / "large"，影响是否建议 MAPJOIN；
+#   table_type      : "fact" / "dimension" / "dws" / "ads"；
+#   description     : 业务描述；
+#
+# 注意：
+#   - 不要写 ODPS 项目名，因为 odps-sql-review 不会连接 ODPS；
+#   - 唯一键和粒度若不确定，请暂不填写，让评审报告标记 “需要确认”，
+#     而不是猜测一个错误值。
+
+tables:
+  dwd_xxx_user_active_di:
+    partition_cols: ["dt"]
+    grain: ["dt", "user_id"]
+    unique_keys:
+      - ["dt", "user_id"]
+    size_level: "large"
+    table_type: "fact"
+    description: "Daily user active table (按天聚合的用户活跃明细)"
+
+  dim_xxx_shop_df:
+    partition_cols: ["dt"]
+    grain: ["shop_id"]
+    unique_keys:
+      - ["dt", "shop_id"]
+    size_level: "small"
+    table_type: "dimension"
+    description: "Shop dimension table (店铺维度表)"

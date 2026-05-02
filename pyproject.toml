@@ -1,0 +1,60 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "odps-sql-review"
+version = "0.1.0"
+description = "Portable, CLI-agnostic static review for ODPS / MaxCompute SQL"
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "MIT" }
+authors = [
+    { name = "odps-sql-review-skill contributors" },
+]
+keywords = [
+    "odps",
+    "maxcompute",
+    "sql",
+    "review",
+    "data-quality",
+    "performance",
+    "agent-skill",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Database",
+    "Topic :: Software Development :: Quality Assurance",
+]
+# All required dependencies live in the standard library.  Optional
+# integrations (PyYAML, sqlglot) are detected at runtime.
+dependencies = []
+
+[project.optional-dependencies]
+yaml = ["pyyaml>=5.1"]
+sqlglot = ["sqlglot>=20.0"]
+dev = [
+    "pyyaml>=5.1",
+    "sqlglot>=20.0",
+    "pytest>=7.0",
+]
+
+[project.scripts]
+odps-sql-review = "odps_sql_review.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/your-org/odps-sql-review-skill"
+Source = "https://github.com/your-org/odps-sql-review-skill"
+Issues = "https://github.com/your-org/odps-sql-review-skill/issues"
+
+[tool.setuptools]
+packages = ["odps_sql_review"]
+include-package-data = true
+
+[tool.setuptools.package-data]
+odps_sql_review = ["*.md"]

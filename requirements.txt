@@ -1,0 +1,10 @@
+# odps-sql-review only requires the Python standard library.
+#
+# Optional dependencies improve the review quality:
+#   pyyaml   - parse table_profile.yml for richer JOIN / partition checks
+#   sqlglot  - structural parse fallback for difficult SQL
+#
+# Install both with:
+#   pip install -r requirements.txt
+pyyaml>=5.1
+sqlglot>=20.0
