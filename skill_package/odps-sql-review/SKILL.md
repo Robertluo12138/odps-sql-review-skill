@@ -142,8 +142,19 @@ These cannot be answered from SQL text alone. Mark each one as
 When asking the user for confirmation, ask only for the minimum
 needed for the current finding. Examples:
 
-- For a JOIN row-explosion concern, ask only for the right table's
-  unique key — do **not** ask the user to fill the full table profile.
+- For a **`LEFT JOIN` degraded by a `WHERE` filter on the right alias**
+  (rule J005), the issue is fully detectable from the SQL text. Ask
+  **only** whether the business needs to preserve all left-table rows
+  (→ move the filter into `ON` or a right-side subquery) or actually
+  wants `INNER JOIN` semantics (→ change `LEFT JOIN` to `INNER JOIN`).
+  Do **not** ask for the right table's unique key, grain, or size for
+  this finding alone — the rewrite does not depend on them.
+- For a **JOIN row-explosion / many-to-many / two-fact-table join**
+  concern (rules J001 / J002 / J003 / J004 / J006 / J010), ask only
+  for the right table's unique key (or join-key uniqueness) on the
+  specific table that triggered the finding — do **not** ask the user
+  to fill the full table profile, and do **not** ask for unique-key
+  confirmation merely because a `LEFT JOIN` was degraded.
 - For a MAPJOIN suggestion, ask only for the dimension table's size
   level — do **not** ask for partition columns and grain.
 - For a metric definition concern, ask only for the business

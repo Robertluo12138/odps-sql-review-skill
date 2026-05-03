@@ -197,6 +197,163 @@ def test_count_distinct_still_suggests_distinct_or_approx():
     assert ("approx_distinct" in section_6) or ("中间表" in section_6)
 
 
+def test_left_join_degradation_does_not_ask_for_unique_key():
+    """A LEFT JOIN degraded by a WHERE on the right alias (J005) is fully
+    detectable from SQL text — section 8 must not demand right-table
+    unique-key confirmation just because a join_safety finding exists."""
+
+    sql = _read(os.path.join(_EXAMPLES, "bad_left_join.sql"))
+    result = run_static_check(sql)
+
+    rule_ids = {f.rule_id for f in result.findings}
+    assert "J005" in rule_ids
+    # Sanity: this example does not trigger row-explosion JOIN rules.
+    assert rule_ids.isdisjoint({"J001", "J002", "J006", "J010"}), (
+        f"unexpected row-explosion rules fired: {rule_ids}"
+    )
+
+    md = render_markdown(result)
+    section_8 = _section(md, "## 8. 需要我补充的信息", "\n>")
+
+    # The unique-key ask is the row-explosion ask — must not appear here.
+    assert "JOIN 行数膨胀" not in section_8, (
+        f"section 8 leaked a row-explosion ask for a pure J005 case:\n{section_8}"
+    )
+    assert "唯一键 / 关联键是否唯一" not in section_8, (
+        f"section 8 demanded unique-key confirmation for J005:\n{section_8}"
+    )
+
+
+def test_left_join_degradation_asks_about_left_row_preservation():
+    """The same case must surface a J005-specific ask about whether the
+    business needs to preserve all left-table rows."""
+
+    sql = _read(os.path.join(_EXAMPLES, "bad_left_join.sql"))
+    md = render_markdown(run_static_check(sql))
+    section_8 = _section(md, "## 8. 需要我补充的信息", "\n>")
+
+    assert "LEFT JOIN 退化" in section_8
+    assert "保留左表全部行" in section_8
+
+
+def test_left_join_degradation_section_6_omits_row_explosion_directions():
+    """Section 6 for a J005-only case must not emit ROW_NUMBER dedup
+    guidance.  MAPJOIN may appear iff a PF003 finding fires; for
+    bad_left_join.sql PF003 *does* fire (right side is a `_df` dim), so
+    we only assert the absence of ROW_NUMBER dedup language here."""
+
+    sql = _read(os.path.join(_EXAMPLES, "bad_left_join.sql"))
+    result = run_static_check(sql)
+    rule_ids = {f.rule_id for f in result.findings}
+    assert "J005" in rule_ids
+    assert rule_ids.isdisjoint({"J001", "J002", "J006", "J010"})
+
+    md = render_markdown(result)
+    section_6 = _section(md, "## 6. 建议改写 SQL", "## 7.")
+
+    # ROW_NUMBER is the row-explosion-specific dedup direction.
+    assert "ROW_NUMBER" not in section_6, (
+        "ROW_NUMBER dedup direction leaked into a pure-J005 section 6:\n"
+        f"{section_6}"
+    )
+    # The J005-specific direction must be present.
+    assert "LEFT JOIN 过滤位置" in section_6
+    assert "ON 子句" in section_6
+
+
+_CAST_IN_ON_SQL = """
+SELECT a.user_id, b.shop_name
+FROM dwd_xxx_order_di a
+JOIN dim_xxx_shop_df b ON CAST(a.shop_id AS BIGINT) = b.shop_id
+WHERE a.dt = '${bizdate}'
+  AND b.dt = '${bizdate}';
+"""
+
+
+_NON_EQUALITY_ON_SQL = """
+SELECT a.user_id, b.shop_name
+FROM dwd_xxx_order_di a
+JOIN dim_xxx_shop_df b ON a.shop_id < b.shop_id
+WHERE a.dt = '${bizdate}'
+  AND b.dt = '${bizdate}';
+"""
+
+
+def test_cast_in_on_keeps_unique_key_and_rewrite_guidance():
+    """J003 (CAST in ON) must still surface the row-explosion / 关联键风险
+    ask in section 8 and the row-explosion rewrite block in section 6,
+    plus a CAST-specific rewrite direction.  Without this the user gets
+    a J003 finding but no actionable guidance on how to fix it."""
+
+    result = run_static_check(_CAST_IN_ON_SQL)
+    rule_ids = {f.rule_id for f in result.findings}
+    assert "J003" in rule_ids, f"J003 did not fire on CAST-in-ON SQL: {rule_ids}"
+
+    md = render_markdown(result)
+    section_8 = _section(md, "## 8. 需要我补充的信息", "\n>")
+    section_6 = _section(md, "## 6. 建议改写 SQL", "## 7.")
+
+    assert "JOIN 行数膨胀" in section_8 and "唯一键" in section_8, (
+        f"section 8 dropped the row-explosion ask for J003:\n{section_8}"
+    )
+    assert "JOIN 行数膨胀治理" in section_6, (
+        f"section 6 dropped the row-explosion block for J003:\n{section_6}"
+    )
+    # The CAST-specific direction should be present so the user knows the
+    # row-explosion guidance also covers their situation.
+    assert "CAST" in section_6, (
+        f"section 6 dropped the CAST-specific direction for J003:\n{section_6}"
+    )
+
+
+def test_unrecognized_on_keeps_unique_key_and_rewrite_guidance():
+    """J004 (unrecognized equality keys, e.g. inequality / expression
+    ON) must still surface the row-explosion / 关联键风险 ask in
+    section 8 and the row-explosion rewrite block in section 6, plus an
+    unknown-ON-specific rewrite direction."""
+
+    result = run_static_check(_NON_EQUALITY_ON_SQL)
+    rule_ids = {f.rule_id for f in result.findings}
+    assert "J004" in rule_ids, (
+        f"J004 did not fire on non-equality ON SQL: {rule_ids}"
+    )
+
+    md = render_markdown(result)
+    section_8 = _section(md, "## 8. 需要我补充的信息", "\n>")
+    section_6 = _section(md, "## 6. 建议改写 SQL", "## 7.")
+
+    assert "JOIN 行数膨胀" in section_8 and "唯一键" in section_8, (
+        f"section 8 dropped the row-explosion ask for J004:\n{section_8}"
+    )
+    assert "JOIN 行数膨胀治理" in section_6, (
+        f"section 6 dropped the row-explosion block for J004:\n{section_6}"
+    )
+    assert "未识别" in section_6 or "EXISTS" in section_6, (
+        f"section 6 dropped the unrecognized-ON-specific direction for J004:"
+        f"\n{section_6}"
+    )
+
+
+def test_row_explosion_case_still_asks_for_unique_key():
+    """A row-explosion case (J010) must still ask for right-table
+    unique-key confirmation in section 8 and surface ROW_NUMBER /
+    pre-aggregation guidance in section 6."""
+
+    sql = _read(os.path.join(_EXAMPLES, "bad_join_explosion.sql"))
+    result = run_static_check(sql)
+    rule_ids = {f.rule_id for f in result.findings}
+    assert "J010" in rule_ids
+
+    md = render_markdown(result)
+    section_8 = _section(md, "## 8. 需要我补充的信息", "\n>")
+    section_6 = _section(md, "## 6. 建议改写 SQL", "## 7.")
+
+    assert "JOIN 行数膨胀" in section_8
+    assert "唯一键" in section_8
+    assert "ROW_NUMBER" in section_6 or "GROUP BY" in section_6
+    assert "JOIN 行数膨胀治理" in section_6
+
+
 def test_performance_focus_keeps_long_period_distinct_guidance():
     """``--focus performance`` strips ``metric_definition`` findings, but
     PF006 (long-period COUNT DISTINCT) is a performance finding.  Section 6

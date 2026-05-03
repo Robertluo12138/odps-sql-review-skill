@@ -171,7 +171,31 @@ def _confirmation_items(result: ReviewResult) -> str:
             seen.add(text)
             asks.append(text)
 
-    has_join = any(f.category == "join_safety" for f in result.findings)
+    # Split join_safety findings by what they actually require to fix.
+    # J005 ("LEFT JOIN degraded to INNER JOIN by WHERE on right alias") is
+    # detected purely from SQL text — the only business question is
+    # whether the user wants to preserve all left-table rows.
+    #
+    # The remaining JOIN rules all raise concerns about JOIN row counts
+    # or relational integrity that the user must confirm against the
+    # right table:
+    #   J001/J002/J006/J010 — row-explosion / cartesian / many-to-many;
+    #   J003               — CAST in ON may silently drop or duplicate rows;
+    #   J004               — unrecognized ON condition (e.g. inequality /
+    #                        expression-based JOIN) of unknown row impact.
+    # All of them benefit from the same ask (right-table unique-key /
+    # row-count integrity) and the same rewrite directions (dedup,
+    # `unique_keys` declaration, V5 / V9 validation SQL).
+    join_findings = [
+        f for f in result.findings if f.category == "join_safety"
+    ]
+    has_left_join_degradation = any(
+        f.rule_id == "J005" for f in join_findings
+    )
+    has_row_explosion_join = any(
+        f.rule_id in {"J001", "J002", "J003", "J004", "J006", "J010"}
+        for f in join_findings
+    )
     has_partition = any(
         f.category == "partition_pruning" for f in result.findings
     )
@@ -199,10 +223,19 @@ def _confirmation_items(result: ReviewResult) -> str:
         for f in result.findings
     )
 
-    if has_join:
+    if has_left_join_degradation:
         add(
-            "【对应第 1/2 节 JOIN 风险】仅就触发 JOIN 行数膨胀的具体右表，"
-            "确认其唯一键 / 关联键是否唯一；不需要全表清单。"
+            "【对应第 1 节 LEFT JOIN 退化】仅需确认业务是否要保留左表全部行："
+            "需要保留 → 把右表过滤条件移到 ON 子句或写成右表子查询；"
+            "本来就只想要匹配项 → 直接把 LEFT JOIN 改成 INNER JOIN。"
+            "该问题可由 SQL 文本直接判断，不需要额外的表元信息。"
+        )
+    if has_row_explosion_join:
+        add(
+            "【对应第 1/2 节 JOIN 行数膨胀 / 关联键风险】仅就触发"
+            "行数膨胀（含 CAST 隐式过滤 / 未识别 ON 条件）的具体右表，"
+            "确认其唯一键 / 关联键是否唯一以及 JOIN 后行数是否符合预期；"
+            "不需要全表清单。"
         )
     if has_partition:
         add(
@@ -316,16 +349,75 @@ def render_markdown(result: ReviewResult, include_validation: bool = True) -> st
 
     parts.append("## 6. 建议改写 SQL")
     rewrite_directions: List[str] = []
-    if any(f.category == "join_safety" for f in result.findings):
+
+    # JOIN-related rewrite directions — split by the underlying rule so we
+    # don't suggest ROW_NUMBER dedup or MAPJOIN for a pure LEFT JOIN
+    # degradation (J005) issue, which is detectable from SQL text alone
+    # and only needs the filter to move to ON / a right-side subquery.
+    join_findings_in_section_6 = [
+        f for f in result.findings if f.category == "join_safety"
+    ]
+    has_left_join_degradation = any(
+        f.rule_id == "J005" for f in join_findings_in_section_6
+    )
+    # Mirror the rule-id set in `_confirmation_items`: J003 (CAST in ON)
+    # and J004 (unrecognized ON) also belong here because both can change
+    # JOIN row counts in non-obvious ways and benefit from the dedup /
+    # validation directions below.
+    has_row_explosion_join = any(
+        f.rule_id in {"J001", "J002", "J003", "J004", "J006", "J010"}
+        for f in join_findings_in_section_6
+    )
+    has_mapjoin_candidate_for_rewrite = any(
+        f.category == "performance" and f.rule_id == "PF003"
+        for f in result.findings
+    )
+
+    if has_left_join_degradation:
         rewrite_directions.append(
-            "- **候选改写方向：JOIN 改写（待用户确认右表唯一键 / 表大小后再定稿）**\n"
-            "  - 方向 A：将右表过滤条件下推到子查询中先过滤再 JOIN，保留\n"
-            "    LEFT JOIN 语义；\n"
-            "  - 方向 B：右表先按候选唯一键 `ROW_NUMBER` 去重后再 JOIN，\n"
-            "    避免行数膨胀；\n"
-            "  - 方向 C：若右表确为小表（一般 < 几十万行），可考虑\n"
-            "    `/*+ MAPJOIN(b) */`。\n"
-            "  - 任一方向落地前，请先回到第 8 节确认右表的唯一键 / 表大小。"
+            "- **候选改写方向：LEFT JOIN 过滤位置（待用户确认是否需要保留"
+            "左表全部行后再定稿）**\n"
+            "  - 方向 A（保留左表全部行）：把右表过滤条件从 WHERE 移到 "
+            "ON 子句，未匹配的行右侧字段保持 NULL，例如 "
+            "`LEFT JOIN b ON a.id = b.id AND b.status = 1`；\n"
+            "  - 方向 B（保留左表全部行）：先把右表用子查询过滤好再 "
+            "LEFT JOIN，例如 "
+            "`LEFT JOIN (SELECT ... FROM b WHERE b.status = 1) b "
+            "ON a.id = b.id`；\n"
+            "  - 方向 C（业务实际需要 INNER 语义）：直接把 LEFT JOIN "
+            "改成 INNER JOIN，并在第 7 节验数 SQL 中比对左表行数与 JOIN 后"
+            "行数，确认丢失行数符合预期；\n"
+            "  - 该问题由 SQL 文本即可判定，不需要表元信息；落地前只需"
+            "在第 8 节确认是 A/B（保留左表）还是 C（确实要 INNER）。"
+        )
+
+    if has_row_explosion_join:
+        rewrite_directions.append(
+            "- **候选改写方向：JOIN 行数膨胀治理 / 关联键风险（待用户"
+            "确认右表唯一键 / 关联键唯一性后再定稿；同样适用于 CAST "
+            "在 ON、未识别等值 ON 条件等关联键风险）**\n"
+            "  - 方向 A：右表先按候选唯一键做 `ROW_NUMBER` / `GROUP BY` "
+            "去重，再 JOIN，从源头消除行数膨胀；\n"
+            "  - 方向 B：必要时在 `table_profile.yml` 中声明右表 "
+            "`unique_keys`（可选输入，仅用于让后续评审更精确）；\n"
+            "  - 方向 C：在第 7 节验数 SQL 中加入 JOIN 前后行数对比与"
+            "右表关联键唯一性检查（V5 / V9）；\n"
+            "  - 方向 D（CAST 在 ON / 未识别 ON 条件适用）：把两侧字段"
+            "类型对齐到上游 CTE / 视图，去掉 ON 中的 `CAST`；非等值或表达式"
+            "关联请改写为 `EXISTS` / 预聚合 / 等值化 ON，必要时 V5 行数"
+            "对比同时核对 CAST / 表达式对齐前后是否变化；\n"
+            "  - 落地前请在第 8 节确认右表关联键是否唯一以及 ON 条件是否"
+            "为干净的等值关联。"
+        )
+
+    if has_mapjoin_candidate_for_rewrite:
+        rewrite_directions.append(
+            "- **候选改写方向：MAPJOIN（待用户确认右表大小级别后再定稿）**\n"
+            "  - 右表确为小表（一般 < 几十万行 / 单 worker 内存可装下）时，"
+            "在 SELECT 后加 `/*+ MAPJOIN(<右表别名>) */` 避免 shuffle；\n"
+            "  - 中等规模可评估 DISTMAPJOIN，large 不要开启；\n"
+            "  - 不要同时使用 MAPJOIN 与 SKEW JOIN；\n"
+            "  - 落地前请在第 8 节确认候选维度表的实际大小级别。"
         )
     # Tailor metric-rewrite directions to the metric flavours actually
     # present in the SQL.  Each direction is gated independently so that
