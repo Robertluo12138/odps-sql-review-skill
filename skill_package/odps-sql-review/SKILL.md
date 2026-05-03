@@ -17,6 +17,12 @@ folder you are reading right now (`SKILL.md`, `references/`,
 `examples/`, `templates/`). No installation, no external service, no
 Python is required to use it.
 
+> **Zero-profile mode is the default.** The SQL text is the only
+> required input. Table profile, LogView and business context are
+> optional inputs that *improve* the review — they are not
+> prerequisites. Do **not** ask the user to maintain a company-wide
+> table dictionary before they can use the skill.
+
 ---
 
 ## 1. What this skill is
@@ -56,19 +62,96 @@ review of SQL that already runs.
 The user can provide any of the following (in order of usefulness):
 
 1. **The SQL itself** — pasted text or the contents of a `.sql` file.
-   This is the only required input.
+   **This is the only required input.** The skill must work in
+   "zero-profile mode" — i.e. when the user gives only the SQL and no
+   metadata at all.
 2. **Optional table profile** — partition columns, grain, unique keys,
    size level, table type. Use the schema in
-   `templates/table_profile_template.yml`.
+   `templates/table_profile_template.yml`. **Optional.** Only improves
+   accuracy of JOIN-uniqueness, MAPJOIN, and partition-pruning findings.
 3. **Optional LogView summary** — total runtime, slowest stage,
    reducer/joiner count, max/avg runtime, whether long-tail is
    present. Use the format in `templates/logview_template.md`.
+   **Optional.** Only required to give concrete reducer/joiner numbers.
 4. **Optional business context** — target table grain, expected
    primary key, metric definitions, whether approximate distinct is
    acceptable, whether this is a scheduled task or ad-hoc.
+   **Optional.** Only required to confirm metric semantics.
 
 If something is missing, do **not** invent it; mark the related
 finding as `需要确认`.
+
+### 3.1 Zero-profile mode (default)
+
+The user is **not** required to maintain a company-wide table
+dictionary before using this skill. Do **not** ask the user to fill
+out `table_profile_template.yml` for every table they own as a
+prerequisite. Instead:
+
+- Run the deterministic SQL-text checks first (see 3.2).
+- Only ask for the **minimum** missing piece of metadata that is
+  blocking a specific finding (see 3.4). Do not ask for metadata you
+  do not need for the current SQL.
+- If the user has a high-frequency table profile already on hand,
+  great — accept it. If not, proceed without it.
+
+### 3.2 What works without any metadata (deterministic SQL-text checks)
+
+These checks rely only on the SQL text and must always be performed,
+even in zero-profile mode:
+
+- missing partition filter on a referenced physical table (any of
+  `dt`/`ds`/`pt`/`hh`/`bizdate`/`stat_dt`/`log_dt`/`month_id`/
+  `year_id`);
+- partition column wrapped in `substr` / `cast` / `date_format` /
+  `from_unixtime` / `to_date`;
+- `LEFT JOIN` invalidated by a `WHERE` filter on the right alias;
+- `ON 1=1`, missing `ON`, `OR` in `ON`, `CAST` in `ON`;
+- `INSERT OVERWRITE` with no target partition or with unbounded
+  dynamic partition;
+- `COUNT DISTINCT` on a long-period window (30d / 365d) on a raw
+  detail table;
+- multiple `COUNT DISTINCT` in one query, `BETWEEN` date boundary,
+  `SELECT *`, `ORDER BY` without `LIMIT`;
+- `ROW_NUMBER OVER (PARTITION BY …)` skew candidates on text-level;
+- low-risk / readability items (single-letter aliases, repeated
+  CASE WHEN, missing comments, overlong CTEs).
+
+Output these findings with concrete SQL evidence. They do not require
+table profile.
+
+### 3.3 What requires confirmation (semantic checks)
+
+These cannot be answered from SQL text alone. Mark each one as
+`需要确认` and explain *what specific piece of information is missing*:
+
+- table grain (one row per ?);
+- unique keys / primary keys of source and target tables;
+- table size level (`small` / `medium` / `large`) — required for
+  MAPJOIN / DISTMAPJOIN suggestions;
+- partition columns when not obvious from naming convention;
+- fact / dimension classification;
+- exact metric semantics (含税/不含税, 按 order_id / 按主单号, 等);
+- whether approximate distinct is acceptable;
+- LogView details (total runtime, slowest stage, reducer/joiner
+  count, long-tail) — required for any concrete tuning number;
+- whether this is a scheduled task or ad-hoc.
+
+### 3.4 Minimum-information principle
+
+When asking the user for confirmation, ask only for the minimum
+needed for the current finding. Examples:
+
+- For a JOIN row-explosion concern, ask only for the right table's
+  unique key — do **not** ask the user to fill the full table profile.
+- For a MAPJOIN suggestion, ask only for the dimension table's size
+  level — do **not** ask for partition columns and grain.
+- For a metric definition concern, ask only for the business
+  definition of that one metric — do **not** ask about every metric in
+  the SQL.
+
+Group related questions into section 8 of the report, but keep each
+question minimal and specific.
 
 ## 4. Safety rules — non-negotiable
 
@@ -81,10 +164,17 @@ The agent using this skill **must**:
 - **never** invent table grain;
 - **never** invent unique keys;
 - **never** invent table size or partition columns;
+- **never** invent metric semantics (含税/不含税, 按账号/按设备/按手机号,
+  含/不含退款, 等);
+- **never** require the user to fill a full table profile before
+  starting the review — zero-profile mode is the default;
 - mark every unknown piece of information with `需要确认`;
 - **always** output an explicit risk level (高 / 中 / 低);
 - **never** answer with only "looks good" — always provide the
-  structured 8-section report.
+  structured 8-section report;
+- **never** produce a final executable rewrite when required table
+  semantics (grain, unique key, partition column, metric definition)
+  are unknown — provide a "候选改写方向" instead and label it as such.
 
 If the user asks the agent to run the SQL or connect to ODPS, the
 agent must refuse and explain why (no execution capability is part of
@@ -94,7 +184,9 @@ this skill).
 
 For every SQL the user submits, the agent must:
 
-1. **Read the SQL carefully** before writing anything.
+1. **Read the SQL carefully** before writing anything. Assume
+   zero-profile mode by default — the user may have provided only the
+   SQL text. Do **not** block the review on missing metadata.
 2. **Identify every source table** and check whether it has a
    partition filter (`dt`/`ds`/`pt`/`hh`/`bizdate`/`stat_dt`/…).
    Wrapped expressions like `substr(dt, 1, 6)` lose partition
@@ -129,9 +221,15 @@ For every SQL the user submits, the agent must:
    forced to supply real values rather than running blindly.
 8. **Mark every unknown** with `需要确认`. Examples: unknown table
    grain, unknown unique key, unknown table size, unknown LogView,
-   unclear business meaning of a metric.
+   unclear business meaning of a metric. **Never invent these.** Ask
+   only for the minimum piece of information that unblocks a specific
+   finding — do not demand a full table dictionary.
 9. **Output the report** in the exact structure described in
-   `references/output_template.md` (also reproduced below).
+   `references/output_template.md` (also reproduced below). In
+   section 6 ("建议改写 SQL"), only emit a final executable rewrite
+   when grain / unique keys / partition columns / metric definitions
+   are confirmed. Otherwise emit a "候选改写方向" labelled as such, so
+   the user does not paste an unverified rewrite into production.
 10. **Never** end with only "looks good". The report must always
     include the risk level and the items still needing confirmation.
 
@@ -183,8 +281,8 @@ Section titles and section numbers must match.
 - 是否需要业务确认
 
 ## 6. 建议改写 SQL
-- 在能确定时给出可执行的改写片段；
-- 表粒度 / 唯一键 / 字段语义未知时只给出 “候选改写方向”，不要假装知道答案。
+- 在表粒度 / 唯一键 / 分区列 / 字段语义都已确认时，给出可执行的改写片段；
+- 任一关键语义未知时只给出 “候选改写方向”，并显式标注 “候选改写方向（待用户确认 X 后再定稿）”，不要假装知道答案。
 
 ## 7. 上线前验数 SQL
 至少包含：
@@ -199,7 +297,8 @@ Section titles and section numbers must match.
 - 右表关联键唯一性检查。
 
 ## 8. 需要我补充的信息
-仅列影响判断的项目：
+**仅列出本次评审实际被卡住的项目**，不是固定清单。以下是常见候选项，
+按需引用；对于本次 SQL 用不到的项目不要罗列：
 - 表分区列；
 - 表粒度；
 - 唯一键；
@@ -208,7 +307,8 @@ Section titles and section numbers must match.
 - 是否允许近似去重；
 - 目标表主键；
 - 是否调度任务；
-- LogView 数据。
+- LogView 数据；
+- 关键指标的业务定义。
 ```
 
 > **不要盲目推荐固定的 ODPS SET 数值。**

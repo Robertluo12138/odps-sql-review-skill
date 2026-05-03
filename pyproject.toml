@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "odps-sql-review"
-version = "0.1.0"
+version = "0.2.0"
 description = "Portable, CLI-agnostic static review for ODPS / MaxCompute SQL"
 readme = "README.md"
 requires-python = ">=3.8"

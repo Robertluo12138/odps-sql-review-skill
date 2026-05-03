@@ -10,6 +10,46 @@ under `odps_sql_review/` and is documented at the bottom of this file.
 
 ---
 
+## Zero-profile mode (read this first)
+
+- **Works without table profile.** Paste the SQL and ask for a
+  review — that is enough.
+- **Table profile is optional.** It only sharpens findings that depend
+  on grain / unique keys / table size (e.g. JOIN row-explosion,
+  MAPJOIN candidates).
+- **Use high-frequency table profiles only when available.** If you
+  already have a profile for the 10–20 tables you touch every week,
+  feed it in. If not, skip it.
+- **Do not try to maintain a full company-wide table dictionary as a
+  prerequisite.** The skill is designed to be useful immediately on
+  arbitrary SQL, not after you finish a metadata project.
+
+What the skill always does in zero-profile mode (deterministic
+SQL-text checks):
+
+- missing partition filter / partition column wrapped in a function;
+- `LEFT JOIN` invalidated by `WHERE` on the right alias;
+- `ON 1=1`, missing `ON`, `OR` / `CAST` in `ON`;
+- `INSERT OVERWRITE` without target partition or with unbounded
+  dynamic partition;
+- long-period `COUNT DISTINCT` on a raw detail table (MAU / YAU);
+- multiple `COUNT DISTINCT`, `BETWEEN` boundaries, `SELECT *`,
+  `ORDER BY` without `LIMIT`;
+- candidate skew / MAPJOIN directions;
+- low-risk readability items.
+
+What the skill marks as `需要确认` (no guessing):
+
+- table grain, unique keys, table size, partition columns when not
+  obvious;
+- exact metric semantics (含税/不含税, 主单号/order_id, 等);
+- LogView details needed to give concrete reducer/joiner numbers.
+
+The agent will ask for the **minimum** missing fact for each finding —
+not a full table dictionary up-front.
+
+---
+
 ## What this is
 
 - A skill folder (`skill_package/odps-sql-review/`) containing a
@@ -65,8 +105,14 @@ The agent will read `SKILL.md`, follow the workflow, and output the
 8-section Chinese review report defined in
 `references/output_template.md`.
 
-For a richer prompt with `table_profile` and LogView slots, see
-`skill_package/odps-sql-review/templates/review_prompt.md`.
+That is the whole flow. You do **not** need to fill out a table
+profile first.
+
+If — and only if — you already have a table profile or a LogView
+summary on hand for this specific SQL, paste them along with the SQL
+using the richer prompt in
+`skill_package/odps-sql-review/templates/review_prompt.md`. They are
+optional inputs that improve precision; they are never prerequisites.
 
 ## What NOT to upload
 

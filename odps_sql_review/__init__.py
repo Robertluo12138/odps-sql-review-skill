@@ -7,6 +7,6 @@ never executes SQL, and never modifies any database. It is safe to run
 on any developer machine.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 __author__ = "odps-sql-review-skill contributors"
 __license__ = "MIT"

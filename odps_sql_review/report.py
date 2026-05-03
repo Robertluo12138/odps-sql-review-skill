@@ -155,15 +155,102 @@ def _metric_block(metrics: List[Metric]) -> str:
 
 
 def _confirmation_items(result: ReviewResult) -> str:
-    items: List[str] = []
-    physical_tables = [t for t in result.tables if not t.is_cte]
-    for t in physical_tables:
-        items.append(f"`{t.name}` 的分区列、表粒度、唯一键、表大小级别（fact/dim、small/large）。")
-    if any(m.aggregate_type == "COUNT_DISTINCT" for m in result.metrics):
-        items.append("是否允许使用 approx_distinct（近似去重），还是必须精确。")
-    items.append("目标表的主键、是否调度任务、调度日期变量。")
-    items.append("LogView：总耗时、慢 stage 类型、reducer/joiner 数量、最大/平均运行时间、是否长尾。")
-    return "\n".join(f"- {item}" for item in items)
+    """Derive the minimum confirmation questions from the actual findings.
+
+    Implements SKILL.md 3.4 (minimum-information principle) and the
+    output-template contract for section 8 / section 0 ``需要确认项``:
+    only ask for facts that are actually blocking a finding in *this*
+    review — never emit a fixed company-wide checklist.
+    """
+
+    asks: List[str] = []
+    seen: set[str] = set()
+
+    def add(text: str) -> None:
+        if text not in seen:
+            seen.add(text)
+            asks.append(text)
+
+    has_join = any(f.category == "join_safety" for f in result.findings)
+    has_partition = any(
+        f.category == "partition_pruning" for f in result.findings
+    )
+    has_metric_def = any(
+        f.category == "metric_definition" for f in result.findings
+    )
+    has_insert = any(
+        f.category == "insert_overwrite" for f in result.findings
+    )
+    has_long_period_distinct = any(
+        f.category == "performance" and f.rule_id == "PF006"
+        for f in result.findings
+    )
+    # PF003 = MAPJOIN candidate (需要 size_level 确认), kept separate from
+    # general LogView/parallelism asks per output_template.md §8 contract:
+    # "表大小级别（仅在评估 MAPJOIN / DISTMAPJOIN 时索取）".
+    mapjoin_findings = [
+        f for f in result.findings
+        if f.category == "performance" and f.rule_id == "PF003"
+    ]
+    has_mapjoin_candidate = bool(mapjoin_findings)
+    has_perf_tuning = any(
+        f.category == "performance"
+        and f.rule_id not in {"PF003", "PF006", "PF999"}
+        for f in result.findings
+    )
+
+    if has_join:
+        add(
+            "【对应第 1/2 节 JOIN 风险】仅就触发 JOIN 行数膨胀的具体右表，"
+            "确认其唯一键 / 关联键是否唯一；不需要全表清单。"
+        )
+    if has_partition:
+        add(
+            "【对应第 1 节 分区风险】仅在分区列命名不在常见约定（"
+            "dt/ds/pt/hh/bizdate/stat_dt 等）以内时，确认实际分区列。"
+        )
+    if has_metric_def:
+        add(
+            "【对应第 5 节 指标口径】仅就当前 SQL 中口径不清的具体指标，"
+            "确认业务定义（含税/不含税、按 order_id 还是主单号、含/不含退款等）；"
+            "不要把所有指标全量索取。"
+        )
+    if has_insert:
+        add(
+            "【对应第 1 节 INSERT OVERWRITE 风险】目标表的主键、是否调度"
+            "任务，以及 ${bizdate} / ${yyyymmdd} 等调度日期变量的实际定义。"
+        )
+    if has_long_period_distinct:
+        add(
+            "【对应第 4 节 长周期去重】是否允许使用 `approx_distinct` "
+            "近似去重；不允许时是否已落地按天聚合的中间表。"
+        )
+    if has_mapjoin_candidate:
+        # Pull the candidate table names straight from the finding titles
+        # so the ask names exactly the tables the user must size-check —
+        # not a blanket "all dim tables" question.
+        candidate_titles = "、".join(
+            sorted({f.title for f in mapjoin_findings})
+        )
+        add(
+            "【对应第 4 节 Join 优化 / MAPJOIN】仅就以下候选维度表确认其"
+            f"实际大小级别（small / medium / large）：{candidate_titles}。"
+            "small 才适合 `/*+ MAPJOIN */`，medium 评估 DISTMAPJOIN，"
+            "large 不要开启。"
+        )
+    if has_perf_tuning:
+        add(
+            "【对应第 4 节 并行度建议】LogView 摘要（总耗时、慢 stage、"
+            "reducer/joiner 数量、是否长尾），仅在你希望得到具体 reducer "
+            "/ joiner 数字时提供；没有就保持 “需要结合 LogView / 数据量确认”。"
+        )
+
+    if not asks:
+        return (
+            "- 本次评审无被卡住的关键信息，仍建议在上线前结合 LogView / "
+            "数据量复核第 4 节的性能建议。"
+        )
+    return "\n".join(f"- {a}" for a in asks)
 
 
 # --------------------------------------------------------------------- #
@@ -228,27 +315,141 @@ def render_markdown(result: ReviewResult, include_validation: bool = True) -> st
     parts.append("")
 
     parts.append("## 6. 建议改写 SQL")
-    parts.append(
-        "由于静态分析无法确认表粒度、唯一键、字段含义，下面只给出候选改写方向，"
-        "请结合 table_profile.yml 和业务上下文确认后再落地：\n"
-    )
+    rewrite_directions: List[str] = []
     if any(f.category == "join_safety" for f in result.findings):
-        parts.append(
-            "- **JOIN 改写**：将右表过滤条件移到子查询中先过滤，再 JOIN；"
-            "对右表先按 `unique_keys` 做 ROW_NUMBER 去重后再 JOIN，避免行数膨胀。\n"
+        rewrite_directions.append(
+            "- **候选改写方向：JOIN 改写（待用户确认右表唯一键 / 表大小后再定稿）**\n"
+            "  - 方向 A：将右表过滤条件下推到子查询中先过滤再 JOIN，保留\n"
+            "    LEFT JOIN 语义；\n"
+            "  - 方向 B：右表先按候选唯一键 `ROW_NUMBER` 去重后再 JOIN，\n"
+            "    避免行数膨胀；\n"
+            "  - 方向 C：若右表确为小表（一般 < 几十万行），可考虑\n"
+            "    `/*+ MAPJOIN(b) */`。\n"
+            "  - 任一方向落地前，请先回到第 8 节确认右表的唯一键 / 表大小。"
         )
-    if any(f.category == "metric_definition" for f in result.findings):
-        parts.append(
-            "- **指标改写**：将 COUNT DISTINCT 拆分为「先按用户日粒度去重，再按周期聚合」；"
-            "比率指标显式处理分母为 0 (`nullif(b, 0)`)。\n"
+    # Tailor metric-rewrite directions to the metric flavours actually
+    # present in the SQL.  Each direction is gated independently so that
+    # each focus mode keeps the right guidance:
+    #   - correctness focus strips ``performance`` findings — but
+    #     ``metric_definition`` advisories (M00x) remain, so ratio /
+    #     basic-aggregate / generic distinct directions still fire when
+    #     the relevant metric flavour exists.
+    #   - performance focus strips ``metric_definition`` findings — but
+    #     PF006 (long-period COUNT DISTINCT) may still fire, so we must
+    #     keep the long-period distinct direction available.
+    metric_def_present = any(
+        f.category == "metric_definition" for f in result.findings
+    )
+    has_count_distinct_metric = any(
+        m.aggregate_type in {"COUNT_DISTINCT", "APPROX_DISTINCT"}
+        for m in result.metrics
+    )
+    has_long_period_distinct_finding = any(
+        f.category == "performance" and f.rule_id == "PF006"
+        for f in result.findings
+    )
+    has_ratio_metric = any(
+        m.aggregate_type == "RATIO" for m in result.metrics
+    )
+    has_basic_aggregate_metric = any(
+        m.aggregate_type in {"SUM", "COUNT", "AVG"}
+        for m in result.metrics
+    )
+
+    trigger_distinct = (
+        (metric_def_present and has_count_distinct_metric)
+        or has_long_period_distinct_finding
+    )
+    trigger_ratio = metric_def_present and has_ratio_metric
+    trigger_basic = metric_def_present and has_basic_aggregate_metric
+    trigger_generic_metric = metric_def_present and not (
+        has_count_distinct_metric
+        or has_ratio_metric
+        or has_basic_aggregate_metric
+    )
+
+    if trigger_distinct:
+        distinct_lines = [
+            "- **候选改写方向：去重指标改写（待用户确认指标业务定义"
+            "与是否允许近似去重后再定稿）**",
+            "  - 方向 A：将 COUNT DISTINCT 拆为 “先按最小粒度（如 "
+            "dt + user_id）去重，再按周期聚合”；禁止把日 UV 直接相加"
+            "得到 MAU / YAU；",
+        ]
+        if has_long_period_distinct_finding:
+            distinct_lines.append(
+                "  - 方向 B：长周期去重时落地按天聚合的中间表（如 "
+                "`dws_xxx_user_active_di`，dt + user_id 粒度），在中间"
+                "表上计算月活 / 年活；"
+            )
+        distinct_lines.append(
+            "  - 方向 C：业务允许近似（非财务 / 合规场景）时改用 "
+            "`approx_distinct`，并在指标命名上体现 `_approx`；"
+        )
+        distinct_lines.append(
+            "  - 落地前请在第 8 节确认指标的精确业务定义，以及"
+            "是否允许近似去重。"
+        )
+        rewrite_directions.append("\n".join(distinct_lines))
+
+    if trigger_ratio:
+        rewrite_directions.append(
+            "- **候选改写方向：比率指标改写（待用户确认分子分母同粒度"
+            "后再定稿）**\n"
+            "  - 方向 A：显式处理分母为 0，如 `分子 / nullif(分母, 0)`，"
+            "避免 NULL 污染；\n"
+            "  - 方向 B：与业务方确认分子与分母是否同粒度、同过滤条件"
+            "（同一时间窗、同一用户口径）；\n"
+            "  - 落地前请在第 8 节确认比率指标的业务定义（比率应 ≤ 1 "
+            "还是允许 > 1，分子是否为分母的子集）。"
+        )
+
+    if trigger_basic:
+        rewrite_directions.append(
+            "- **候选改写方向：基础聚合指标（SUM / COUNT / AVG）改写"
+            "（待用户确认 JOIN 唯一键与指标业务定义后再定稿）**\n"
+            "  - 方向 A：确认参与聚合的明细行是否被 JOIN 放大；必要时"
+            "先在最小粒度去重 / 预聚合，再 JOIN，避免 SUM / COUNT 重复"
+            "计算；\n"
+            "  - 方向 B：与业务方确认指标口径（含税 / 不含税、是否含"
+            "退款 / 优惠券、按 order_id 还是主单号统计），保证 SUM / "
+            "COUNT 的语义一致；\n"
+            "  - 方向 C：在第 7 节验数 SQL 中加入 JOIN 前后行数对比与"
+            "核心字段空值检查，提前发现 NULL / 重复行污染聚合结果；\n"
+            "  - 落地前请在第 8 节确认相关右表的唯一键以及指标的精确"
+            "业务定义。"
+        )
+
+    if trigger_generic_metric:
+        # metric_definition findings exist but nothing in result.metrics
+        # matched a known flavour (e.g. CASE_WHEN-only).  Fall back to a
+        # generic, non-leading direction.
+        rewrite_directions.append(
+            "- **候选改写方向：指标语义复核（待用户确认指标业务定义"
+            "后再定稿）**\n"
+            "  - 与业务方确认指标业务定义、过滤条件与统计粒度；\n"
+            "  - 在第 7 节验数 SQL 中加入指标波动检查与空值检查。"
         )
     if any(f.category == "partition_pruning" for f in result.findings):
-        parts.append(
-            "- **分区裁剪**：在最内层子查询补充分区过滤；"
-            "去掉对分区列的函数包裹。\n"
+        rewrite_directions.append(
+            "- **候选改写方向：分区裁剪（在常见分区命名下可直接落地，"
+            "其它情况待第 8 节确认实际分区列后再定稿）**\n"
+            "  - 方向 A：在最内层子查询补充分区过滤；\n"
+            "  - 方向 B：去掉对分区列的函数包裹，把变换放到外层。"
         )
-    if not result.findings:
-        parts.append("- 当前未识别到显著问题，仍建议补充注释、明确指标口径。\n")
+
+    if rewrite_directions:
+        parts.append(
+            "> 默认零 profile 模式：以下仅为候选改写方向，**不是可直接\n"
+            "> 上线的 SQL**。在表粒度 / 唯一键 / 分区列 / 字段语义全部由\n"
+            "> 用户确认前，请勿直接粘贴落地。\n"
+        )
+        parts.append("\n".join(rewrite_directions) + "\n")
+    else:
+        parts.append(
+            "- 暂未识别到显著正确性 / 性能问题；本次无需改写。\n"
+            "  仍建议补充注释、明确指标口径，并在上线前结合数据量复核。\n"
+        )
     parts.append("")
 
     parts.append("## 7. 上线前验数 SQL")
@@ -264,8 +465,9 @@ def render_markdown(result: ReviewResult, include_validation: bool = True) -> st
     parts.append("")
 
     parts.append(
-        "> 本报告由 odps-sql-review 静态分析生成，未连接 ODPS。最终风险结论需要结合 "
-        "数据量、LogView、业务口径、调度上下文与 table_profile.yml 复核。"
+        "> 本报告由 odps-sql-review 静态分析生成，未连接 ODPS。零 profile "
+        "模式下仅依据 SQL 文本判断；最终风险结论需要结合数据量、LogView、"
+        "业务口径与调度上下文复核（table_profile 为可选输入，非前置条件）。"
     )
     return "\n".join(parts).strip() + "\n"
 

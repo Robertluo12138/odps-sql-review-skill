@@ -2,10 +2,17 @@
 
 > 把下面这段文字 + 你的 SQL 一起发给 AI Agent，它就会按
 > `odps-sql-review` skill 的规则输出标准的 8 节评审报告。
+>
+> **零 profile 模式（默认）**：直接用最简版即可，**只贴 SQL 就够了**。
+> 不需要先维护一份完整的表元信息字典。Agent 会先跑确定性的 SQL 文本
+> 检查；只有在某个具体结论被卡住时，它才会向你索要那一项最小信息。
+>
+> 进阶版只是在 **你恰好已经有** table profile / LogView 摘要时才更
+> 划算，没有就保持空白，**不要为了填满模板而捏造字段**。
 
 ---
 
-## 最简版（推荐）
+## 最简版（推荐，零 profile 默认走这个）
 
 ```
 Use the `odps-sql-review` skill to review the following ODPS / MaxCompute SQL.
@@ -32,7 +39,10 @@ Use the `odps-sql-review` skill to review the following ODPS / MaxCompute SQL.
 
 ---
 
-## 进阶版（带 table profile + LogView）
+## 进阶版（仅在你已经有 profile / LogView 时使用）
+
+> 任何字段不知道就**整段删掉或留空**，Agent 会自动标 `需要确认`。
+> 不要为了填满字段而编造值。
 
 ```
 Use the `odps-sql-review` skill to review the following ODPS SQL.
@@ -40,7 +50,7 @@ Use the `odps-sql-review` skill to review the following ODPS SQL.
 【SQL】
 <在这里粘贴 SQL>
 
-【Table profile】（如果有）
+【Table profile】（可选 — 没有就删掉这一段）
 tables:
   <table_name>:
     partition_cols: ["dt"]
@@ -51,7 +61,7 @@ tables:
     table_type: "fact"
     description: "..."
 
-【LogView 摘要】（如果有）
+【LogView 摘要】（可选 — 没有就删掉这一段）
 任务总耗时：
 最慢 stage：
 stage 类型：
@@ -61,7 +71,7 @@ reducer / joiner 数：
 单 worker 平均耗时：
 是否只有少数 worker 慢：
 
-【业务上下文】（如果有）
+【业务上下文】（可选 — 没有就删掉这一段）
 - 目标表主键：
 - 是否调度任务：
 - 是否允许近似去重：
@@ -96,6 +106,6 @@ Use `odps-sql-review` skill, focus only on <correctness | performance | metrics>
 - AK / SK / token / endpoint；
 - 真实用户数据样本。
 
-如果不能脱敏，请使用本仓库 `odps_sql_review` 的本地 Python CLI 在
-内网环境进行静态分析（参考根目录 README.md 的 “Optional: Python
-static checker” 章节）。
+如果不能脱敏，可在内网环境改用与本 skill 配套的可选离线工具
+`odps_sql_review` Python CLI（独立项目，**不属于本 skill 包**，
+按需自行获取）。本 skill 本身不依赖该 CLI，QoderWork 用户无需安装。
